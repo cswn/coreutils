@@ -34,6 +34,7 @@ pub mod options {
     pub const VERBOSE: &str = "verbose";
     pub const EXACT: &str = "exact";
     pub const ZERO: &str = "zero";
+    pub const RANDOM_SOURCE: &str = "random-source";
 
     pub mod remove {
         pub const UNLINK: &str = "unlink";
@@ -261,6 +262,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     let exact = matches.get_flag(options::EXACT) || size.is_some();
     let zero = matches.get_flag(options::ZERO);
     let verbose = matches.get_flag(options::VERBOSE);
+    let random_source = matches.get_one::<String>(options::RANDOM_SOURCE);
 
     for path_str in matches.get_many::<String>(options::FILE).unwrap() {
         show_if_err!(wipe_file(
@@ -272,6 +274,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
             zero,
             verbose,
             force,
+            random_source,
         ));
     }
     Ok(())
@@ -351,6 +354,13 @@ pub fn uu_app() -> Command {
                 .help("add a final overwrite with zeros to hide shredding")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new(options::RANDOM_SOURCE)
+                .long(options::RANDOM_SOURCE)
+                .help("get random bytes from FILE")
+                .value_name("FILE")
+                .action(ArgAction::Append),
+        )
         // Positional arguments
         .arg(
             Arg::new(options::FILE)
@@ -392,7 +402,9 @@ fn wipe_file(
     zero: bool,
     verbose: bool,
     force: bool,
+    random_source: Option<&String>,
 ) -> UResult<()> {
+    println!("random_source is:{:?}", random_source);
     // Get these potential errors out of the way first
     let path = Path::new(path_str);
     if !path.exists() {
