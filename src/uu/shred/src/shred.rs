@@ -8,6 +8,7 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 #[cfg(unix)]
 use libc::S_IWUSR;
+use rand::rngs::adapter::ReadRng;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, Write};
@@ -19,6 +20,8 @@ use uucore::error::{FromIo, UResult, USimpleError, UUsageError};
 use uucore::parse_size::parse_size_u64;
 use uucore::shortcut_value_parser::ShortcutValueParser;
 use uucore::{format_usage, help_about, help_section, help_usage, show_error, show_if_err};
+
+mod rand_read_adapter;
 
 const ABOUT: &str = help_about!("shred.md");
 const USAGE: &str = help_usage!("shred.md");
@@ -88,6 +91,7 @@ enum Pattern {
 enum PassType {
     Pattern(Pattern),
     Random,
+    RandomSource(File),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -171,6 +175,11 @@ enum BytesWriter {
         offset: usize,
         buffer: [u8; PATTERN_BUFFER_SIZE],
     },
+    // For random_source option
+    RandomSource {
+        rng: rand_read_adapter::ReadRng<File>,
+        buffer: [u8; BLOCK_SIZE],
+    },
 }
 
 impl BytesWriter {
@@ -196,6 +205,10 @@ impl BytesWriter {
                 };
                 Self::Pattern { offset: 0, buffer }
             }
+            PassType::RandomSource(file) => Self::RandomSource {
+                rng: rand_read_adapter::ReadRng::new(file),
+                buffer: [0; BLOCK_SIZE],
+            },
         }
     }
 
@@ -209,6 +222,11 @@ impl BytesWriter {
             Self::Pattern { offset, buffer } => {
                 let bytes = &buffer[*offset..size + *offset];
                 *offset = (*offset + size) % PATTERN_LENGTH;
+                bytes
+            }
+            Self::RandomSource { rng, buffer } => {
+                let bytes = &mut buffer[..size];
+                rng.fill(bytes);
                 bytes
             }
         }
@@ -235,8 +253,6 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
         },
         None => unreachable!(),
     };
-
-    // TODO: implement --random-source
 
     let remove_method = if matches.get_flag(options::WIPESYNC) {
         RemoveMethod::WipeSync
@@ -359,6 +375,7 @@ pub fn uu_app() -> Command {
                 .long(options::RANDOM_SOURCE)
                 .help("get random bytes from FILE")
                 .value_name("FILE")
+                .value_hint(clap::ValueHint::FilePath)
                 .action(ArgAction::Append),
         )
         // Positional arguments
@@ -388,6 +405,7 @@ fn pass_name(pass_type: &PassType) -> String {
         PassType::Random => String::from("random"),
         PassType::Pattern(Pattern::Single(byte)) => format!("{byte:x}{byte:x}{byte:x}"),
         PassType::Pattern(Pattern::Multi([a, b, c])) => format!("{a:x}{b:x}{c:x}"),
+        PassType::RandomSource(file) => String::from("random_source"),
     }
 }
 
@@ -464,7 +482,17 @@ fn wipe_file(
             for pattern in PATTERNS.into_iter().take(remainder) {
                 pass_sequence.push(PassType::Pattern(pattern));
             }
-            let mut rng = rand::thread_rng();
+
+            //let mut rng = rand::thread_rng();
+            let mut rng = match random_source {
+                Some(r) => {
+                    let file = File::open(&r[..]).map_err_context(|| {
+                        format!("failed to open random source {}", r.quote())
+                    })?;
+                    rand_read_adapter::ReadRng::new(file)
+                }
+                None => rand::thread_rng(),
+            };
             pass_sequence.shuffle(&mut rng); // randomize the order of application
 
             let n_random = 3 + n_passes / 10; // Minimum 3 random passes; ratio of 10 after
